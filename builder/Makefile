@@ -24,7 +24,7 @@
 # TODO: build base image for virt-builder from iso instead of using templates
 
 # virt-builder os-version
-VERSION = centos-7.0
+VERSION = fedora-20
 POSTFIX =
 ifeq ($(POSTFIX), )
 	FULLNAME = $(VERSION)
@@ -32,13 +32,11 @@ else
 	FULLNAME = $(VERSION)-$(POSTFIX)
 endif
 BOX = $(FULLNAME).box
-SIZE = 40
+SIZE = $(DISK_SIZE)
 # the user might want to generate a personal set of base images
 OUTPUT := $(shell echo ~/tmp/builder/$(FULLNAME))
 SERVER = 'user@host.example.org'
 REMOTE_PATH = 'public_html/vagrant'
-# list of extra repos (from repos/ folder) to install
-REPOS =
 # list of extra packages to install
 EXTRAS =
 # list of docker images to pull in
@@ -48,15 +46,6 @@ PREFIX = $(OUTPUT)/
 SUFFIX = .docker
 # $(VARIABLE:OLD_PREFIX%OLD_SUFFIX=NEW_PREFIX%NEW_SUFFIX)
 DOCKER = $(IMAGES:%=$(PREFIX)%$(SUFFIX))
-# find out which repo files actually exist
-REPOS_PATTERN = $(REPOS:%=repos/%.repo)
-ifeq ($(REPOS_PATTERN), )
-	REPOS_PRESENT =
-else
-	REPOS_PRESENT := $(shell ls $(REPOS_PATTERN) 2> /dev/null)
-endif
-# build command line args for virt-builder
-REPOS_COMMAND = $(REPOS_PRESENT:%=--upload %:/etc/yum.repos.d/)
 
 all: box
 
@@ -94,40 +83,41 @@ $(OUTPUT)/docker.tar: $(DOCKER)
 # build image with virt-builder
 # NOTE: some of this system prep is based on the vagrant-libvirt scripts
 # TODO: install: ruby ruby-devel make gcc rubygems ?
-$(OUTPUT)/builder.img: files/* $(OUTPUT)/docker.tar $(REPOS_PRESENT)
+$(OUTPUT)/builder.img: files/* $(OUTPUT)/docker.tar
 	@echo Running virt-builder...
 	[ -d $(OUTPUT) ] || mkdir -p $(OUTPUT)/	# ensure path is present first!
-	virt-builder $(VERSION) $(REPOS_COMMAND) \
+	virt-builder $(VERSION) \
 	--output $(OUTPUT)/builder.img \
 	--format qcow2 \
 	--size $(SIZE)G \
-	--install rsync,nfs-utils,sudo,openssh-server,openssh-clients,screen \
-	--install vim-enhanced,git,wget,file,man,tree,nmap,tcpdump,htop,lsof,telnet,mlocate,bind-utils,koan,iftop,yum-utils,nc,psmisc \
 	--root-password file:files/password \
 	--upload files/epel-release-7-0.2.noarch.rpm:/root/epel-release-7-0.2.noarch.rpm \
 	--upload files/puppetlabs-release-el-7.noarch.rpm:/root/puppetlabs-release-el-7.noarch.rpm \
-	--run-command 'yum install -y /root/epel-release-7-0.2.noarch.rpm && rm -f /root/epel-release-7-0.2.noarch.rpm' \
-	--run-command 'yum install -y bash-completion moreutils' \
-	--run-command 'yum install -y /root/puppetlabs-release-el-7.noarch.rpm && rm -f /root/puppetlabs-release-el-7.noarch.rpm' \
-	--run-command 'yum install -y puppet' \
-	--run-command 'yum install -y docker || true' \
-	--run-command 'systemctl enable docker || true' \
+	--run-command 'yum erase -y docker' \
+	--run-command 'yum install -y $(DEFAULT_PACKAGES)' \
+	--run-command 'rm -f /root/puppetlabs-release-el-7.noarch.rpm && rm -f /root/epel-release-7-0.2.noarch.rpm' \
 	--upload $(OUTPUT)/docker.tar:/root/ \
 	--run-command 'mkdir /root/docker/ && tar -C /root/docker/ -xf /root/docker.tar && rm /root/docker.tar' \
 	--upload files/yum.sh:/root/yum.sh \
-	--run-command '/root/yum.sh install $(EXTRAS) && rm /root/yum.sh' \
+	--run-command 'yum -y install $(FEDORA_EXTRAS)' \
+	--run-command '/root/yum.sh install $(CENTOS_EXTRAS)' \
+	--run-command '/root/yum.sh install $(RHEL_EXTRAS)' \
+	--run-command 'rm /root/yum.sh'
 	--run-command 'yum update -y' \
+	--run-command 'rpm -qa | grep -i docker' \
+	$(ENABLE_DOCKER) \
 	--run files/user.sh \
 	--run files/ssh.sh \
 	--run files/network.sh \
 	--run files/cleanup.sh \
+ 	--run-command 'setenforce 0' \
 	--run-command 'touch /.autorelabel'
 
 	# boot machine once to run the selinux relabelling, see:
 	# https://www.redhat.com/archives/libguestfs/2014-January/msg00183.html
 	# https://github.com/libguestfs/libguestfs/commit/20a4bfde9628cfeb8bea441cab7dcc94843b34e3
-	qemu-system-x86_64 -machine accel=kvm:tcg -cpu host -m 512 -drive file=$(OUTPUT)/builder.img,format=qcow2,if=virtio -no-reboot -serial stdio -nographic || (rm $(OUTPUT)/builder.img; false)
-	reset	# TODO: qemu-system-x86_64 borks the terminal :(
+	# qemu-system-x86_64 -machine accel=kvm:tcg -cpu host -m 512 -drive file=$(OUTPUT)/builder.img,format=qcow2,if=virtio -no-reboot -serial stdio -nographic || (rm $(OUTPUT)/builder.img; false)
+	# reset	# TODO: qemu-system-x86_64 borks the terminal :(
 
 #
 #	convert
